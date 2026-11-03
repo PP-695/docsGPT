@@ -1,0 +1,76 @@
+# Single source of truth for all TUNABLES (config over constants).
+# Secrets/keys live in .env (never here). Flip a value here to run an ablation.
+# These tunables take precedence over any matching value in .env (see src/config.py).
+
+# --- Model ids (verify live free-tier limits per PROJECT_PLAN §7 before relying on them) ---
+embedding_model: BAAI/bge-small-en-v1.5   # 384-dim default; benchmark vs bge-base (D-005)
+reranker_model: cross-encoder/ms-marco-MiniLM-L-6-v2  # cross-encoder, CPU; MiniLM for free-tier latency (D-030)
+synthesis_model: groq/openai/gpt-oss-120b  # deployed default; Groq retired llama-3.3-70b 08/16/26, migrated to their designated replacement (D-053). Gemini opt-in per request (D-046)
+cheap_model: groq/openai/gpt-oss-20b    # decompose/grade/rewrite + RAGAS judge; Groq's designated replacement for the retired llama-3.1-8b-instant (D-008/D-053)
+
+# --- Agent (Layer 5a: cited-answer graph) ---
+agent_context_k: 8    # chunks retrieved (hybrid) and passed to synthesis as [1..k] (D-034)
+agent_max_retries: 1  # Layer 5c: max self-correction re-syntheses when the draft is ungrounded (D-041); 0 == 5b behavior
+
+# --- RAGAS answer-quality eval (Layer 5d, D-042): keep each judge request under Groq's 6000 TPM free tier ---
+ragas_context_k: 4        # retrieved chunks passed to the RAGAS judge (8 full chunks overflowed 6000 TPM -> 413)
+ragas_context_chars: 600  # per-chunk char cap fed to the RAGAS judge
+ragas_reference_chars: 800  # cap the (often long) forum reference answer fed to the judge (else 413)
+
+# --- Retrieval / fusion ---
+sparse_model: Qdrant/bm25   # fastembed BM25 sparse embeddings for hybrid (D-026)
+rrf_k: 60             # RRF constant: score(d) = sum 1/(k + rank_i(d)); tunable, client-side (D-027)
+retrieve_top_k: 50    # candidates fetched before reranking
+rerank_top_n: 6       # candidates kept after cross-encoder rerank (D-007)
+rerank_max_chars: 1200  # cap passage length fed to the cross-encoder (bounds CPU cost; D-032)
+
+# --- Indexing (Layer 2: dense baseline into Qdrant Cloud, D-021/D-022) ---
+qdrant_collection: docs_dense       # dense-only collection (Layer 2 baseline)
+qdrant_hybrid_collection: docs_hybrid  # named dense+sparse vectors (Layer 4a, D-026)
+vector_distance: Cosine         # bge embeddings are compared with cosine; we L2-normalize
+embed_batch_size: 64            # chunks encoded per forward pass (CPU-friendly)
+upsert_batch_size: 256          # points per Qdrant upsert request
+embed_max_chars: 8000           # hard cap before encode; tokenizer truncates ~512 tok anyway (D-022)
+# bge-en-v1.5 retrieval: prepend this instruction to QUERIES only (not passages).
+# Documented bge usage for short-query→passage search; empty string disables it.
+query_instruction: "Represent this sentence for searching relevant passages:"
+
+# --- Chunking (Layer 1: structure-aware; never split a code block) ---
+chunk_size: 1000        # target characters per chunk
+chunk_overlap: 150
+min_chunk_chars: 24     # drop near-empty chunks (heading-only / lone image link) with no code
+
+# --- Paths ---
+corpus_jsonl: data/corpus/chunks.jsonl    # durable chunked corpus, the source of truth (D-004)
+results_dir: results                       # eval results JSON — reproducible record (D-010)
+
+# --- Corpus source (Layer 1a: LangChain/LangGraph OSS docs, MIT-licensed) ---
+# Ingested from the MIT-licensed langchain-ai/docs repo (.mdx source), Python-focused
+# scope (D-016). The raw clone lives in raw_dir (git-ignored); chunks.jsonl is committed.
+corpus:
+  repo: https://github.com/langchain-ai/docs.git
+  ref: main                                 # cloned, then the exact SHA is pinned in the manifest
+  raw_dir: data/raw/langchain-docs
+  snippets_dir: src/snippets                # for best-effort <Snippet>/import inlining
+  docs_base_url: https://docs.langchain.com # local path -> public URL for citations
+  include_globs:                            # Python-focused OSS docs (excludes js, langsmith, snippets, reference, contributing)
+    - src/oss/python/**
+    - src/oss/langchain/**
+    - src/oss/langgraph/**
+    - src/oss/deepagents/**
+    - src/oss/concepts/**
+    - src/oss/integrations/**
+    - src/oss/*.mdx
+
+# --- LangChain Forum source (Layer 1b: solved topics = natural gold labels, D-018/D-019) ---
+# GitHub Discussions migrated to forum.langchain.com (Discourse) in mid-2025. We use SOLVED
+# topics as GOLD-EVAL SEEDS ONLY (question -> MIT docs chunk at Layer 3); forum answer text is
+# never added to the retrieval corpus. Public JSON API, no auth. robots.txt allows /c/ and /t/.
+forum:
+  base_url: https://forum.langchain.com
+  categories:                               # display names; only 'solved' topics are kept
+    - OSS Product Help
+  max_pages_per_category: 20
+  request_delay_s: 0.2                       # polite pacing for the public forum
+  raw_dir: data/raw/forum                    # cached topic JSON incl. answers (git-ignored)
+  seeds_jsonl: data/gold/forum_seeds.jsonl   # committed gold seeds: question + metadata (no answer body)

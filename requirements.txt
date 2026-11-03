@@ -1,0 +1,65 @@
+# Layer 0 scaffold dependencies — EXACT pins for reproducibility.
+# Heavy ML/retrieval deps (torch, sentence-transformers, qdrant-client, langgraph,
+# ragas, fastapi, ...) are added in the layer that first needs them (DECISIONS D-015).
+
+# --- Runtime ---
+# pydantic bumped 2.9.2 -> 2.13.4 at Layer 5a: langgraph/langchain-core/google-genai
+# require modern pydantic 2.x; verified all tests green + config/models load (D-033).
+pydantic==2.13.4
+# bumped 2.5.2 -> 2.14.2 at Layer 5d: ragas pulls langchain-community, which requires
+# pydantic-settings>=2.10.1. Verified Settings still loads (D-042).
+pydantic-settings==2.14.2
+pyyaml==6.0.2
+python-dotenv==1.0.1
+
+# --- Retrieval / indexing (Layer 2: dense baseline) ---
+# Wheels verified for Python 3.13 / Windows (D-020): torch ships cp313 win_amd64;
+# sentence-transformers, transformers, qdrant-client are pure-python.
+# torch here is the CPU build (Windows PyPI default; matches Cloud Run CPU — D-023).
+torch==2.12.1
+sentence-transformers==5.6.0
+qdrant-client==1.18.0
+
+# --- Hybrid retrieval (Layer 4a: BM25 sparse + client-side RRF, D-026/D-027) ---
+# fastembed provides Qdrant's battle-tested BM25 sparse embeddings ("Qdrant/bm25").
+# Pulls onnxruntime + pillow (unused by BM25 itself) -> heavier Cloud Run image,
+# handled at Layer 8 (CPU wheels, D-023). py3.13/Windows wheels verified (D-026).
+fastembed==0.8.0
+
+# --- LLM gateway (Layer 3 synthetic gold + Layer 5/6 agent + RAGAS judge) ---
+# Groq official SDK (OpenAI-compatible); routes cheap/high-volume calls to
+# llama-3.1-8b-instant on the free tier (D-008/D-020). Backoff + cache in src/llm.
+groq==1.5.0
+
+# --- Agent (Layer 5a: LangGraph cited-answer graph + Gemini synthesis, D-008/D-033) ---
+# langgraph pulls langchain-core (pure-python). google-genai = current unified Gemini
+# SDK (supersedes google-generativeai). Synthesis routes to gemini-2.5-flash (D-033).
+langgraph==1.2.8
+google-genai==2.10.0
+
+# --- Answer-quality eval (Layer 5d: RAGAS over agent answers, D-040/D-042) ---
+# ragas provides Faithfulness/Answer Relevancy/Answer Correctness/Context Precision+Recall.
+# Judge is routed through OUR gateway (fixed Groq-8B) + local bge embeddings via
+# src/eval/ragas_adapters.py — NOT langchain-groq (which would downgrade groq 1.5.0 -> 0.37.x).
+# ragas 0.4.3 hard-imports langchain_community VertexAI paths removed in lc-community 0.4.x;
+# the adapter installs a harmless isinstance-sentinel shim before importing ragas (D-042).
+ragas==0.4.3
+
+# --- API + streaming (Layer 6: FastAPI app, SSE cited-answer stream, D-043) ---
+# FastAPI on Starlette; the /ask/stream endpoint emits Server-Sent Events (no extra dep).
+# uvicorn is the ASGI server for local + Cloud Run (Layer 8). httpx (already a groq
+# transitive dep) backs fastapi.testclient.TestClient in tests. py3.13 wheels verified.
+fastapi==0.139.0
+uvicorn==0.51.0
+
+# --- Observability (Layer 7: Langfuse tracing of graph nodes + LLM gateway, D-045) ---
+# langfuse 4.x is OpenTelemetry-based; resolves clean against the pinned stack
+# (pydantic 2.13 / langchain-core 1.x untouched) — pulls only the OTel SDK + backoff/wrapt.
+# A LangChain CallbackHandler traces every LangGraph node; the gateway emits generation
+# spans by hand (it calls the Groq/Gemini SDKs directly, so callbacks can't see them).
+# No-op when LANGFUSE_* keys are absent — tests/CLI/eval need no account.
+langfuse==4.13.2
+
+# --- Dev / tooling ---
+pytest==8.3.3
+ruff==0.6.9
